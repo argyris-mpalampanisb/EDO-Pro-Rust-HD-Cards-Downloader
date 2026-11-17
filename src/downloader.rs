@@ -24,13 +24,16 @@ pub async fn download_all(config: &Config, items: &[DownloadItem]) -> Result<Dow
         .user_agent("edopro-hd-rust/1.0")
         .build()?;
 
+    // Never download over protected custom card images
+    let items: Vec<&DownloadItem> = items.iter().filter(|item| !config.is_protected(item.id)).collect();
+
     let succeeded = AtomicUsize::new(0);
     let failed = AtomicUsize::new(0);
     let total = items.len();
     let done = AtomicUsize::new(0);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(config.concurrency));
 
-    let _ = stream::iter(items.iter())
+    let _ = stream::iter(items.into_iter())
         .map(|item| {
             let client = &client;
             let config = &config;

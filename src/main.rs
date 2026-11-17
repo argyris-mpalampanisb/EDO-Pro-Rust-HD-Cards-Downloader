@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod downloader;
 mod tracker;
+mod variants;
 
 use anyhow::Result;
 use clap::Parser;
@@ -42,17 +43,31 @@ struct Cli {
     /// Specific card IDs to download (comma-separated)
     #[arg(short, long)]
     ids: Option<String>,
+
+    /// Extra custom card IDs/ranges to protect from --clean and downloads,
+    /// e.g. "88800000-88800999,12345678" (77711000-77711999 is always protected)
+    #[arg(short, long)]
+    protect: Option<String>,
+
+    /// Give Anime/VG/Pre-Errata/reprint cards the HD art of their official card
+    /// (runs automatically after --all-cards and --clean)
+    #[arg(long)]
+    variants: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let config = config::Config::new(cli.edopro_path.clone(), cli.concurrency);
+    let extra_protected = match &cli.protect {
+        Some(spec) => config::parse_protected(spec)?,
+        None => Vec::new(),
+    };
+    let config = config::Config::new(cli.edopro_path.clone(), cli.concurrency, extra_protected);
 
     if cli.clean {
         println!("Wiping {} ...", config.pics_path.display());
-        config.wipe_pics()?;
-        println!("Done. Starting fresh download.\n");
+        let kept = config.wipe_pics()?;
+        println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
         let mut tracker = tracker::Tracker::new(&config)?;
         let items = collect_all().await?;
@@ -66,10 +81,16 @@ async fn main() -> Result<()> {
         tracker.save()?;
 
         println!("\nDone: {} succeeded, {} failed.", result.succeeded, result.failed);
+        run_variants(&config);
         return Ok(());
     }
 
     config.setup_dirs()?;
+
+    if cli.variants && !(cli.all_cards || cli.all_fields || cli.deck.is_some() || cli.ids.is_some()) {
+        run_variants(&config);
+        return Ok(());
+    }
     let mut tracker = tracker::Tracker::new(&config)?;
 
     if cli.all_cards || cli.all_fields || cli.deck.is_some() || cli.ids.is_some() {
@@ -89,6 +110,9 @@ async fn main() -> Result<()> {
 
         if to_download.is_empty() {
             println!("Everything is up to date!");
+            if cli.all_cards || cli.variants {
+                run_variants(&config);
+            }
             return Ok(());
         }
 
@@ -100,6 +124,9 @@ async fn main() -> Result<()> {
         tracker.save()?;
 
         println!("\nDone: {} succeeded, {} failed.", result.succeeded, result.failed);
+        if cli.all_cards || cli.variants {
+            run_variants(&config);
+        }
     } else {
         interactive_mode(&config, &mut tracker, cli.force).await?;
     }
@@ -148,7 +175,7 @@ async fn interactive_mode(
     force: bool,
 ) -> Result<()> {
     println!("=== EDOPro HD Downloader (interactive) ===");
-    println!("Commands: /allcards, /allfields, /deck <name>, /ids <123,456>, /clean, /quit");
+    println!("Commands: /allcards, /allfields, /deck <name>, /ids <123,456>, /variants, /clean, /quit");
 
     loop {
         print!("\n> ");
@@ -163,8 +190,8 @@ async fn interactive_mode(
 
         if input == "/clean" {
             println!("Wiping {} ...", config.pics_path.display());
-            config.wipe_pics()?;
-            println!("Done. Starting fresh download.\n");
+            let kept = config.wipe_pics()?;
+            println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
             let items = collect_all().await?;
             println!("Found {} images to download.", items.len());
@@ -176,6 +203,12 @@ async fn interactive_mode(
             tracker.save()?;
 
             println!("Done: {} succeeded, {} failed.", result.succeeded, result.failed);
+            run_variants(config);
+            continue;
+        }
+
+        if input == "/variants" {
+            run_variants(config);
             continue;
         }
 
@@ -219,6 +252,9 @@ async fn interactive_mode(
 
         if to_download.is_empty() {
             println!("All already downloaded.");
+            if input == "/allcards" {
+                run_variants(config);
+            }
             continue;
         }
 
@@ -231,8 +267,23 @@ async fn interactive_mode(
         tracker.save()?;
 
         println!("Done: {} succeeded, {} failed.", result.succeeded, result.failed);
+        if input == "/allcards" {
+            run_variants(config);
+        }
     }
 
     println!("Bye!");
     Ok(())
+}
+
+/// Copy official HD art to Anime/VG/Pre-Errata/reprint variants (see variants.rs)
+fn run_variants(config: &config::Config) {
+    println!("Copying official HD art to Anime/VG/reprint variants...");
+    match variants::apply_variant_art(config) {
+        Ok(r) => println!(
+            "Variant art: {} images copied ({} by alias, {} by name).",
+            r.copied, r.by_alias, r.by_name
+        ),
+        Err(e) => eprintln!("Variant art failed: {}", e),
+    }
 }   
