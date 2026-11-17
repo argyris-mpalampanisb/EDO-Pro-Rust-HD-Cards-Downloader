@@ -1,0 +1,103 @@
+# Builds portable, dependency-free binaries for Windows, Linux and macOS.
+#
+# - Push a tag like "v0.2.0" to build all three and attach them to a GitHub Release.
+# - Or run it by hand from the Actions tab ("Run workflow") to get the files as build artifacts.
+name: Build portable binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  BIN: edoprorusthddownloader
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Static C runtime: runs on any 64-bit Windows without the Visual C++ Redistributable
+          - name: windows-x64
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          # musl: a fully static binary that runs on any 64-bit Linux distro
+          - name: linux-x64
+            os: ubuntu-latest
+            targets: x86_64-unknown-linux-musl
+          # One universal binary for both Apple Silicon and Intel Macs
+          - name: macos-universal
+            os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Install musl tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Build (Linux)
+        if: runner.os == 'Linux'
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Build (macOS universal)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p target/universal/release
+          lipo -create -output "target/universal/release/$BIN" \
+            "target/aarch64-apple-darwin/release/$BIN" \
+            "target/x86_64-apple-darwin/release/$BIN"
+
+      - name: Package
+        shell: bash
+        run: |
+          pkg="$BIN-${{ matrix.name }}"
+          mkdir -p "dist/$pkg"
+          case "${{ runner.os }}" in
+            Windows) cp "target/x86_64-pc-windows-msvc/release/$BIN.exe" "dist/$pkg/" ;;
+            Linux)   cp "target/x86_64-unknown-linux-musl/release/$BIN" "dist/$pkg/" ;;
+            macOS)   cp "target/universal/release/$BIN" "dist/$pkg/" ;;
+          esac
+          chmod +x "dist/$pkg/$BIN"* || true
+          cp README.md "dist/$pkg/"
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$pkg.zip" "$pkg" > /dev/null
+          else
+            tar czf "$pkg.tar.gz" "$pkg"
+          fi
+          ls -la
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BIN }}-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+
+      - name: Attach to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/*.tar.gz

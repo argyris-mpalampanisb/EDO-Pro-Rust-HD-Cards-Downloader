@@ -959,12 +959,13 @@ mod tests {
 @'
 [package]
 name = "edoprorusthddownloader"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json"] }
+# rustls instead of the system TLS library: no OpenSSL needed, so the binaries are portable
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
@@ -972,6 +973,12 @@ anyhow = "1"
 futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+[profile.release]
+# Smaller portable binaries
+strip = true
+lto = true
+codegen-units = 1
 '@ | Set-Content -Path "Cargo.toml" -Encoding UTF8
 
 Write-Host "All files written. Now run: cargo build --release" -ForegroundColor Green

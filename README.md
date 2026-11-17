@@ -45,3 +45,28 @@ edoprorusthddownloader --help                      # all options
 ```
 
 Variant art is copied next to the official image it comes from: into `expansions/pics` for fresh downloads, or into the root `pics` folder for images you already moved there.
+
+## Portable builds (Windows, macOS, Linux)
+
+Ready-made builds are on the Releases page. They need nothing else installed:
+
+| File | Runs on |
+|---|---|
+| `edoprorusthddownloader-windows-x64.zip` | 64-bit Windows 10/11 |
+| `edoprorusthddownloader-macos-universal.tar.gz` | Apple Silicon and Intel Macs |
+| `edoprorusthddownloader-linux-x64.tar.gz` | Any 64-bit Linux distro (fully static) |
+
+Unpack it into your EDOPro folder and run it from there (or point it at the folder with `-e <path>`):
+
+- **Windows:** double-click `edoprorusthddownloader.exe`.
+- **macOS:** in Terminal, `./edoprorusthddownloader`. The build isn't signed, so the first time run `xattr -d com.apple.quarantine edoprorusthddownloader` (or right-click > Open).
+- **Linux:** in a terminal, `./edoprorusthddownloader`.
+
+**Making a new release:** the builds are made by GitHub Actions (`.github/workflows/release.yml`). Bump the version in `Cargo.toml`, then push a matching tag:
+
+```
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+All three builds are attached to a new GitHub Release automatically. You can also run the workflow by hand from the Actions tab ("Run workflow") to get the files as downloadable artifacts without making a release.
