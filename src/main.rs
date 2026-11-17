@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
         println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
         let mut tracker = tracker::Tracker::new(&config)?;
-        let items = collect_all().await?;
+        let items = collect_all(&config).await?;
         println!("Found {} images to download.", items.len());
 
         let result = downloader::download_all(&config, &items).await?;
@@ -95,7 +95,7 @@ async fn main() -> Result<()> {
 
     if cli.all_cards || cli.all_fields || cli.deck.is_some() || cli.ids.is_some() {
         let items: Vec<api::DownloadItem> = if cli.all_cards || cli.all_fields {
-            collect_all().await?
+            collect_all(&config).await?
         } else {
             collect_from_args(&cli)?
         };
@@ -134,14 +134,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Collect all card images + field images (mirrors the Go version exactly)
-async fn collect_all() -> Result<Vec<api::DownloadItem>> {
+/// Collect all card images (OCG/TCG + Rush Duel) + field images
+async fn collect_all(config: &config::Config) -> Result<Vec<api::DownloadItem>> {
     let mut items = Vec::new();
 
     let card_ids: Vec<u32> = api::get_all_card_ids().await?;
     for id in card_ids {
         items.push(api::DownloadItem { id, is_field: false });
     }
+    items.extend(rush_items(config));
 
     let field_ids: Vec<u32> = api::get_all_field_ids().await?;
     for id in field_ids {
@@ -149,6 +150,20 @@ async fn collect_all() -> Result<Vec<api::DownloadItem>> {
     }
 
     Ok(items)
+}
+
+/// Rush Duel cards, taken from EDOPro's own databases (YGOPRODeck's API doesn't list them)
+fn rush_items(config: &config::Config) -> Vec<api::DownloadItem> {
+    match variants::local_rush_ids(config) {
+        Ok(ids) => {
+            println!("Rush Duel: {} cards found in EDOPro's databases.", ids.len());
+            ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect()
+        }
+        Err(e) => {
+            eprintln!("Warning: skipping Rush Duel images ({:#})", e);
+            Vec::new()
+        }
+    }
 }
 
 fn collect_from_args(cli: &Cli) -> Result<Vec<api::DownloadItem>> {
@@ -193,7 +208,7 @@ async fn interactive_mode(
             let kept = config.wipe_pics()?;
             println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
-            let items = collect_all().await?;
+            let items = collect_all(config).await?;
             println!("Found {} images to download.", items.len());
             let result = downloader::download_all(config, &items).await?;
 
@@ -214,7 +229,10 @@ async fn interactive_mode(
 
         let items: Vec<api::DownloadItem> = if input == "/allcards" {
             let ids: Vec<u32> = api::get_all_card_ids().await?;
-            ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect()
+            let mut items: Vec<api::DownloadItem> =
+                ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect();
+            items.extend(rush_items(config));
+            items
         } else if input == "/allfields" {
             let ids: Vec<u32> = api::get_all_field_ids().await?;
             ids.into_iter().map(|id| api::DownloadItem { id, is_field: true }).collect()

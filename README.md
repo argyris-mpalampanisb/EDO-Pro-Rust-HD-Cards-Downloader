@@ -11,10 +11,12 @@
 ## Features
 
 - **HD art for every official OCG/TCG card**, plus Field Spell artwork.
+- **Rush Duel art.** YGOPRODeck's API doesn't list Rush Duel cards, but its image server has art for many of them (421×614, more than twice the size of EDOPro's own images). The Rush card IDs are read from EDOPro's own card databases and downloaded along with everything else (`/allcards`, `--clean`). Cards YGOPRODeck has no image for show up as failed (HTTP 404) and are skipped on later runs. Rush reprints then get their art from the variant step.
 - **HD art for Anime, VG, Manga, Pre-Errata and reprint cards.** YGOPRODeck has no images for EDOPro's unofficial cards, but most of them are versions of an official card. The downloader reads EDOPro's own card databases (`expansions/*.cdb` and `repositories/*/*.cdb`) and copies the official HD artwork to those variants. No extra downloads needed!
   - A variant is matched by its database alias first, then by an identical name, then by its name without a tag like "(Anime)" or "(VG)".
   - Only missing or low-resolution images are replaced, so existing HD art and custom art are never overwritten.
-  - Rush Duel cards and anime-only cards (no official version) are skipped.
+  - Rush Duel cards only take art from Rush Duel cards (e.g. Rush reprints), never from OCG/TCG cards.
+  - Anime-only cards (no official version) are skipped.
   - Every copy is listed in `variant_art_log.csv`, next to the copied images. Delete those files to undo.
 - **Custom cards are protected.** Card IDs `77711000-77711999` are never deleted by `--clean` and never overwritten by a download. Add your own ranges with `--protect`.
 
@@ -24,7 +26,7 @@ Run the .exe with no arguments for interactive mode:
 
 | Command | What it does |
 |---|---|
-| `/allcards` | Download all new card images, then apply variant art |
+| `/allcards` | Download all new card images (OCG/TCG and Rush Duel), then apply variant art |
 | `/allfields` | Download all new Field Spell artwork |
 | `/deck <name>` | Download the images of one deck |
 | `/ids <123,456>` | Download specific card IDs |

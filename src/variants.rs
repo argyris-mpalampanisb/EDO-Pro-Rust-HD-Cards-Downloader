@@ -6,8 +6,10 @@
 //!   2. its name is identical to an official card's name,
 //!   3. its name without a trailing "(Anime)", "(VG)", "(Manga)", "(Skill)"... matches one.
 //!
-//! Rush Duel cards and tokens are skipped. Only missing or low-resolution images are replaced, so
-//! HD art and custom card art are never overwritten. Every copy is logged in `variant_art_log.csv`.
+//! Rush Duel cards only take art from Rush Duel cards (Rush reprints, once the Rush art is
+//! downloaded), never from OCG/TCG cards. Tokens are skipped. Only missing or low-resolution images
+//! are replaced, so HD art and custom card art are never overwritten. Every copy is logged in
+//! `variant_art_log.csv`.
 
 use crate::config::Config;
 use anyhow::Result;
@@ -129,6 +131,22 @@ fn load_cards(config: &Config) -> Result<HashMap<u32, CardRow>> {
     Ok(cards)
 }
 
+/// Rush Duel card IDs from EDOPro's own databases (main prints only; reprints get their art from
+/// `apply_variant_art`). YGOPRODeck's API lists no Rush cards, but its image server has art for
+/// many of them, so these IDs are downloaded directly; the ones it doesn't have just fail.
+pub fn local_rush_ids(config: &Config) -> Result<Vec<u32>> {
+    let cards = load_cards(config)?;
+    let mut ids: Vec<u32> = cards
+        .iter()
+        .filter(|(id, c)| {
+            c.ot & SCOPE_RUSH != 0 && c.alias == 0 && c.kind & TYPE_TOKEN == 0 && !config.is_protected(**id)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort_unstable();
+    Ok(ids)
+}
+
 /// Folders checked for HD images, in EDOPro's priority order.
 fn pic_dirs(config: &Config) -> [PathBuf; 2] {
     [config.pics_path.clone(), config.root_pics_path.clone()]
@@ -165,13 +183,14 @@ pub fn apply_variant_art(config: &Config) -> Result<VariantReport> {
         .filter_map(|&id| find_hd(&dirs, &existing, id).map(|p| (id, p)))
         .collect();
 
-    // Official card per name, preferring the main artwork (alias 0)
+    // Card with HD art per (name, is Rush), preferring the main artwork (alias 0)
+    let is_rush = |card: &CardRow| card.ot & SCOPE_RUSH != 0;
     let mut ids: Vec<u32> = hd.keys().copied().collect();
     ids.sort_unstable();
-    let mut by_name: HashMap<String, u32> = HashMap::new();
+    let mut by_name: HashMap<(String, bool), u32> = HashMap::new();
     for id in ids {
         let card = &cards[&id];
-        let key = card.name.to_lowercase();
+        let key = (card.name.to_lowercase(), is_rush(card));
         let replace = match by_name.get(&key) {
             Some(&prev) => card.alias == 0 && cards[&prev].alias != 0,
             None => true,
@@ -189,20 +208,21 @@ pub fn apply_variant_art(config: &Config) -> Result<VariantReport> {
 
     for id in targets {
         let card = &cards[&id];
-        if hd.contains_key(&id)
-            || card.kind & TYPE_TOKEN != 0
-            || card.ot & SCOPE_RUSH != 0
-            || config.is_protected(id)
-        {
+        if hd.contains_key(&id) || card.kind & TYPE_TOKEN != 0 || config.is_protected(id) {
             continue;
         }
 
+        // Rush cards only take Rush art; everything else only takes OCG/TCG art
+        let rush = is_rush(card);
+        let same_kind = |src: &u32| cards.get(src).map_or(false, |s| is_rush(s) == rush);
         let name = card.name.to_lowercase();
-        let (source, by_alias) = if card.alias != 0 && hd.contains_key(&card.alias) {
+        let (source, by_alias) = if card.alias != 0 && hd.contains_key(&card.alias) && same_kind(&card.alias) {
             (card.alias, true)
-        } else if let Some(&src) = by_name.get(&name) {
+        } else if let Some(&src) = by_name.get(&(name.clone(), rush)) {
             (src, false)
-        } else if let Some(&src) = strip_suffix(&name).and_then(|base| by_name.get(base)) {
+        } else if let Some(&src) =
+            strip_suffix(&name).and_then(|base| by_name.get(&(base.to_string(), rush)))
+        {
             (src, false)
         } else {
             continue;

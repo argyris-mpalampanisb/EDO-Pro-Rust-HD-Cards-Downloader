@@ -1,6 +1,6 @@
 # Run this from your project root (where Cargo.toml is)
 
-# Rewrites every source file with the latest version (protected custom cards + variant art included)
+# Rewrites every source file with the latest version (protected custom cards, variant art and Rush Duel art included)
 
 # Create src dir if needed
 New-Item -ItemType Directory -Force -Path src | Out-Null
@@ -79,7 +79,7 @@ async fn main() -> Result<()> {
         println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
         let mut tracker = tracker::Tracker::new(&config)?;
-        let items = collect_all().await?;
+        let items = collect_all(&config).await?;
         println!("Found {} images to download.", items.len());
 
         let result = downloader::download_all(&config, &items).await?;
@@ -104,7 +104,7 @@ async fn main() -> Result<()> {
 
     if cli.all_cards || cli.all_fields || cli.deck.is_some() || cli.ids.is_some() {
         let items: Vec<api::DownloadItem> = if cli.all_cards || cli.all_fields {
-            collect_all().await?
+            collect_all(&config).await?
         } else {
             collect_from_args(&cli)?
         };
@@ -143,14 +143,15 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Collect all card images + field images (mirrors the Go version exactly)
-async fn collect_all() -> Result<Vec<api::DownloadItem>> {
+/// Collect all card images (OCG/TCG + Rush Duel) + field images
+async fn collect_all(config: &config::Config) -> Result<Vec<api::DownloadItem>> {
     let mut items = Vec::new();
 
     let card_ids: Vec<u32> = api::get_all_card_ids().await?;
     for id in card_ids {
         items.push(api::DownloadItem { id, is_field: false });
     }
+    items.extend(rush_items(config));
 
     let field_ids: Vec<u32> = api::get_all_field_ids().await?;
     for id in field_ids {
@@ -158,6 +159,20 @@ async fn collect_all() -> Result<Vec<api::DownloadItem>> {
     }
 
     Ok(items)
+}
+
+/// Rush Duel cards, taken from EDOPro's own databases (YGOPRODeck's API doesn't list them)
+fn rush_items(config: &config::Config) -> Vec<api::DownloadItem> {
+    match variants::local_rush_ids(config) {
+        Ok(ids) => {
+            println!("Rush Duel: {} cards found in EDOPro's databases.", ids.len());
+            ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect()
+        }
+        Err(e) => {
+            eprintln!("Warning: skipping Rush Duel images ({:#})", e);
+            Vec::new()
+        }
+    }
 }
 
 fn collect_from_args(cli: &Cli) -> Result<Vec<api::DownloadItem>> {
@@ -202,7 +217,7 @@ async fn interactive_mode(
             let kept = config.wipe_pics()?;
             println!("Done ({} custom card images kept). Starting fresh download.\n", kept);
 
-            let items = collect_all().await?;
+            let items = collect_all(config).await?;
             println!("Found {} images to download.", items.len());
             let result = downloader::download_all(config, &items).await?;
 
@@ -223,7 +238,10 @@ async fn interactive_mode(
 
         let items: Vec<api::DownloadItem> = if input == "/allcards" {
             let ids: Vec<u32> = api::get_all_card_ids().await?;
-            ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect()
+            let mut items: Vec<api::DownloadItem> =
+                ids.into_iter().map(|id| api::DownloadItem { id, is_field: false }).collect();
+            items.extend(rush_items(config));
+            items
         } else if input == "/allfields" {
             let ids: Vec<u32> = api::get_all_field_ids().await?;
             ids.into_iter().map(|id| api::DownloadItem { id, is_field: true }).collect()
@@ -328,12 +346,15 @@ struct CardImage {
     id: u32,
 }
 
-/// Get ALL image IDs from the full card list (no filter)
-pub async fn get_all_card_ids() -> Result<Vec<u32>> {
-    let resp = reqwest::get(API_BASE)
+/// Fetch a card list from the API and return every image ID in it
+async fn fetch_image_ids(url: &str, what: &str) -> Result<Vec<u32>> {
+    let resp = reqwest::get(url)
         .await
-        .context("Failed to fetch card list")?;
-    let body: ApiResponse = resp.json().await?;
+        .with_context(|| format!("Failed to fetch {}", what))?;
+    let body: ApiResponse = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to read {}", what))?;
     let mut ids = Vec::new();
     for card in &body.data {
         for img in &card.card_images {
@@ -342,6 +363,13 @@ pub async fn get_all_card_ids() -> Result<Vec<u32>> {
             }
         }
     }
+    Ok(ids)
+}
+
+/// Get ALL image IDs from the full card list (no filter).
+/// Note: this list never includes Rush Duel cards; see `variants::local_rush_ids`.
+pub async fn get_all_card_ids() -> Result<Vec<u32>> {
+    let mut ids = fetch_image_ids(API_BASE, "card list").await?;
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -349,19 +377,8 @@ pub async fn get_all_card_ids() -> Result<Vec<u32>> {
 
 /// Get field spell image IDs
 pub async fn get_all_field_ids() -> Result<Vec<u32>> {
-    let url = format!("{}?type=spell card&race=field", API_BASE);
-    let resp = reqwest::get(&url)
-        .await
-        .context("Failed to fetch field list")?;
-    let body: ApiResponse = resp.json().await?;
-    let mut ids = Vec::new();
-    for card in &body.data {
-        for img in &card.card_images {
-            if img.id != 0 {
-                ids.push(img.id);
-            }
-        }
-    }
+    let url = format!("{}?type=spell%20card&race=field", API_BASE);
+    let mut ids = fetch_image_ids(&url, "field list").await?;
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -674,8 +691,10 @@ impl Tracker {
 //!   2. its name is identical to an official card's name,
 //!   3. its name without a trailing "(Anime)", "(VG)", "(Manga)", "(Skill)"... matches one.
 //!
-//! Rush Duel cards and tokens are skipped. Only missing or low-resolution images are replaced, so
-//! HD art and custom card art are never overwritten. Every copy is logged in `variant_art_log.csv`.
+//! Rush Duel cards only take art from Rush Duel cards (Rush reprints, once the Rush art is
+//! downloaded), never from OCG/TCG cards. Tokens are skipped. Only missing or low-resolution images
+//! are replaced, so HD art and custom card art are never overwritten. Every copy is logged in
+//! `variant_art_log.csv`.
 
 use crate::config::Config;
 use anyhow::Result;
@@ -797,6 +816,22 @@ fn load_cards(config: &Config) -> Result<HashMap<u32, CardRow>> {
     Ok(cards)
 }
 
+/// Rush Duel card IDs from EDOPro's own databases (main prints only; reprints get their art from
+/// `apply_variant_art`). YGOPRODeck's API lists no Rush cards, but its image server has art for
+/// many of them, so these IDs are downloaded directly; the ones it doesn't have just fail.
+pub fn local_rush_ids(config: &Config) -> Result<Vec<u32>> {
+    let cards = load_cards(config)?;
+    let mut ids: Vec<u32> = cards
+        .iter()
+        .filter(|(id, c)| {
+            c.ot & SCOPE_RUSH != 0 && c.alias == 0 && c.kind & TYPE_TOKEN == 0 && !config.is_protected(**id)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    ids.sort_unstable();
+    Ok(ids)
+}
+
 /// Folders checked for HD images, in EDOPro's priority order.
 fn pic_dirs(config: &Config) -> [PathBuf; 2] {
     [config.pics_path.clone(), config.root_pics_path.clone()]
@@ -833,13 +868,14 @@ pub fn apply_variant_art(config: &Config) -> Result<VariantReport> {
         .filter_map(|&id| find_hd(&dirs, &existing, id).map(|p| (id, p)))
         .collect();
 
-    // Official card per name, preferring the main artwork (alias 0)
+    // Card with HD art per (name, is Rush), preferring the main artwork (alias 0)
+    let is_rush = |card: &CardRow| card.ot & SCOPE_RUSH != 0;
     let mut ids: Vec<u32> = hd.keys().copied().collect();
     ids.sort_unstable();
-    let mut by_name: HashMap<String, u32> = HashMap::new();
+    let mut by_name: HashMap<(String, bool), u32> = HashMap::new();
     for id in ids {
         let card = &cards[&id];
-        let key = card.name.to_lowercase();
+        let key = (card.name.to_lowercase(), is_rush(card));
         let replace = match by_name.get(&key) {
             Some(&prev) => card.alias == 0 && cards[&prev].alias != 0,
             None => true,
@@ -857,20 +893,21 @@ pub fn apply_variant_art(config: &Config) -> Result<VariantReport> {
 
     for id in targets {
         let card = &cards[&id];
-        if hd.contains_key(&id)
-            || card.kind & TYPE_TOKEN != 0
-            || card.ot & SCOPE_RUSH != 0
-            || config.is_protected(id)
-        {
+        if hd.contains_key(&id) || card.kind & TYPE_TOKEN != 0 || config.is_protected(id) {
             continue;
         }
 
+        // Rush cards only take Rush art; everything else only takes OCG/TCG art
+        let rush = is_rush(card);
+        let same_kind = |src: &u32| cards.get(src).map_or(false, |s| is_rush(s) == rush);
         let name = card.name.to_lowercase();
-        let (source, by_alias) = if card.alias != 0 && hd.contains_key(&card.alias) {
+        let (source, by_alias) = if card.alias != 0 && hd.contains_key(&card.alias) && same_kind(&card.alias) {
             (card.alias, true)
-        } else if let Some(&src) = by_name.get(&name) {
+        } else if let Some(&src) = by_name.get(&(name.clone(), rush)) {
             (src, false)
-        } else if let Some(&src) = strip_suffix(&name).and_then(|base| by_name.get(base)) {
+        } else if let Some(&src) =
+            strip_suffix(&name).and_then(|base| by_name.get(&(base.to_string(), rush)))
+        {
             (src, false)
         } else {
             continue;

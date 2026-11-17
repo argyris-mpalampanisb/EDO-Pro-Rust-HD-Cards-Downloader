@@ -26,12 +26,15 @@ struct CardImage {
     id: u32,
 }
 
-/// Get ALL image IDs from the full card list (no filter)
-pub async fn get_all_card_ids() -> Result<Vec<u32>> {
-    let resp = reqwest::get(API_BASE)
+/// Fetch a card list from the API and return every image ID in it
+async fn fetch_image_ids(url: &str, what: &str) -> Result<Vec<u32>> {
+    let resp = reqwest::get(url)
         .await
-        .context("Failed to fetch card list")?;
-    let body: ApiResponse = resp.json().await?;
+        .with_context(|| format!("Failed to fetch {}", what))?;
+    let body: ApiResponse = resp
+        .json()
+        .await
+        .with_context(|| format!("Failed to read {}", what))?;
     let mut ids = Vec::new();
     for card in &body.data {
         for img in &card.card_images {
@@ -40,6 +43,13 @@ pub async fn get_all_card_ids() -> Result<Vec<u32>> {
             }
         }
     }
+    Ok(ids)
+}
+
+/// Get ALL image IDs from the full card list (no filter).
+/// Note: this list never includes Rush Duel cards; see `variants::local_rush_ids`.
+pub async fn get_all_card_ids() -> Result<Vec<u32>> {
+    let mut ids = fetch_image_ids(API_BASE, "card list").await?;
     ids.sort();
     ids.dedup();
     Ok(ids)
@@ -47,19 +57,8 @@ pub async fn get_all_card_ids() -> Result<Vec<u32>> {
 
 /// Get field spell image IDs
 pub async fn get_all_field_ids() -> Result<Vec<u32>> {
-    let url = format!("{}?type=spell card&race=field", API_BASE);
-    let resp = reqwest::get(&url)
-        .await
-        .context("Failed to fetch field list")?;
-    let body: ApiResponse = resp.json().await?;
-    let mut ids = Vec::new();
-    for card in &body.data {
-        for img in &card.card_images {
-            if img.id != 0 {
-                ids.push(img.id);
-            }
-        }
-    }
+    let url = format!("{}?type=spell%20card&race=field", API_BASE);
+    let mut ids = fetch_image_ids(&url, "field list").await?;
     ids.sort();
     ids.dedup();
     Ok(ids)
